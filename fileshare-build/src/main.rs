@@ -35,7 +35,20 @@ enum Target {
     /// Starts the app in full on live reloading dev mode
     Dev,
     /// Remove build artifacts
-    Clean,
+    Clean {
+        /// Whether to narrow cleaning to the site directory
+        #[structopt(long)]
+        html: bool,
+        /// Whether to narrow cleaning to the Elm build artifacts
+        #[structopt(long)]
+        elm: bool,
+        /// Whether to narrow cleaning to the Rust build artifacts
+        #[structopt(long)]
+        rust: bool,
+        /// Whether to narrow cleaning to documentation
+        #[structopt(long)]
+        doc: bool,
+    },
 }
 
 fn cargo(project_root: &Path, release: bool, subcommand: &str) -> anyhow::Result<()> {
@@ -282,9 +295,30 @@ fn main() -> ::anyhow::Result<()> {
             });
             cargo(&opt.project_root, false, "run")?;
         }
-        Target::Clean => {
-            sp! { "rm" ; "-rf", opt.project_root.join("static") };
-            sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") };
+        Target::Clean { html, elm, rust, doc } => {
+            match (html, elm, rust, doc) {
+                (true, _, _, _) => sp! { "rm" ; "-rf", opt.project_root.join("static") },
+                (_, true, _, false) => sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") },
+                // Once I figure out Elm documentation,
+                // this should delete that.
+                (_, true, _, true) => return Ok(()),
+                (_, _, true, false) => sp! { "cargo" ; "clean",
+                                              "--manifest-path", opt.project_root.join("Cargo.toml") },
+                (_, _, true, true) => sp! { "cargo" ; "clean", "--doc",
+                                             "--manifest-path", opt.project_root.join("Cargo.toml") },
+                // This should delete *all* generated documentation.
+                // That means once I figure out Elm documentation,
+                // deleting it needs to be added here.
+                (false, false, false, true) => sp! { "cargo" ; "clean", "--doc", "--manifest-path",
+                                                      opt.project_root.join("Cargo.toml") },
+                // This should delete *all* build artifacts.
+                (false, false, false, false) => {
+                    sp! { "rm" ; "-rf", opt.project_root.join("static") };
+                    sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") };
+                    sp! { "cargo" ; "clean", "--manifest-path", opt.project_root.join("Cargo.toml") };
+                    return Ok(())
+                }
+            };
         }
     }
     Ok(())
