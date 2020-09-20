@@ -129,9 +129,10 @@ fn copy(project_root: &Path) -> anyhow::Result<()> {
     builder.add(Glob::new("*.css")?);
     builder.add(Glob::new("*.js")?);
     let matcher = builder.build()?;
+    let ignore_matcher = Glob::new("*#*")?.compile_matcher();
     for entry in WalkDir::new(project_root.join("src")) {
         let entry = entry?;
-        if matcher.is_match(entry.path()) {
+        if matcher.is_match(entry.path()) && !ignore_matcher.is_match(entry.path()) {
             let depth = entry.depth();
             let rel = entry
                 .path()
@@ -233,6 +234,7 @@ fn main() -> ::anyhow::Result<()> {
             builder.add(Glob::new("*.js")?);
             let copy_matcher = builder.build()?;
             let elm_matcher = Glob::new("*.elm")?.compile_matcher();
+            let ignore_matcher = Glob::new("*#*")?.compile_matcher();
             let mopt = opt.clone();
             thread::spawn(move || {
                 let server = TcpListener::bind("127.0.0.1:9000").expect("failed to bind tcp port");
@@ -260,10 +262,10 @@ fn main() -> ::anyhow::Result<()> {
                                         Ok(x) => x,
                                         Err(_) => continue,
                                     };
-                                    if copy_matcher.is_match(entry.path()) {
+                                    if copy_matcher.is_match(entry.path()) && !ignore_matcher.is_match(entry.path()) {
                                         refresh_copies = true;
                                     }
-                                    if elm_matcher.is_match(entry.path()) {
+                                    if elm_matcher.is_match(entry.path()) && !ignore_matcher.is_match(entry.path()) {
                                         refresh_elm = true;
                                     }
                                     if refresh_copies && refresh_elm {
@@ -271,10 +273,10 @@ fn main() -> ::anyhow::Result<()> {
                                     }
                                 }
                             } else {
-                                if copy_matcher.is_match(path) {
+                                if copy_matcher.is_match(path) && !ignore_matcher.is_match(path) {
                                     refresh_copies = true;
                                 }
-                                if elm_matcher.is_match(path) {
+                                if elm_matcher.is_match(path) && !ignore_matcher.is_match(path) {
                                     refresh_elm = true;
                                 }
                             }
