@@ -186,7 +186,6 @@ impl Binaries {
 
 fn event_path(event: &DebouncedEvent) -> Option<&Path> {
     match event {
-        DebouncedEvent::NoticeWrite(x)
         | DebouncedEvent::NoticeRemove(x)
         | DebouncedEvent::Create(x)
         | DebouncedEvent::Write(x)
@@ -252,7 +251,7 @@ fn main() -> ::anyhow::Result<()> {
                             println!("notify event: {:?}", event);
                             let path = match event_path(&event) {
                                 Some(x) => x,
-                                None => return,
+                                None => continue,
                             };
                             let mut refresh_copies = false;
                             let mut refresh_elm = false;
