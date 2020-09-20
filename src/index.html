@@ -2,6 +2,7 @@
   <!-- Heya! -->
   <head>
     <script src="reload.js"></script>
+    <script src="main.js"></script>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -10,13 +11,17 @@
         HEADER OWO
       </header>
       <main>
-        Hello!
-
         <p>
           As long as <code>reload.js</code> is loaded,
           our changes will be automatically reflected in the browser!
         </p>
+        <div id="elm"></div>
       </main>
     </div>
   </body>
+  <script>
+    var app = Elm.Main.init({
+       node: document.getElementById('elm')
+    });
+  </script>
 </html>
