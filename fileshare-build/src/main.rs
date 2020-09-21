@@ -196,6 +196,92 @@ fn event_path(event: &DebouncedEvent) -> Option<&Path> {
     }
 }
 
+
+fn dev_server(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
+    copy(&opt.project_root)?;
+    elm(&opt.project_root, &bins.elm, bins.terser.as_deref(), false)?;
+
+    let mut builder = GlobSetBuilder::new();
+    builder.add(Glob::new("*.html")?);
+    builder.add(Glob::new("*.css")?);
+    builder.add(Glob::new("*.js")?);
+    let copy_matcher = builder.build()?;
+    let elm_matcher = Glob::new("*.elm")?.compile_matcher();
+    let ignore_matcher = Glob::new("*#*")?.compile_matcher();
+    macro_rules! is_copy {
+        ($x:expr) => {
+            (copy_matcher.is_match($x) && !ignore_matcher.is_match($x))
+        }
+    }
+    macro_rules! is_elm {
+        ($x:expr) => {
+            (elm_matcher.is_match($x) && !ignore_matcher.is_match($x))
+        }
+    }
+    let mopt = opt.clone();
+    thread::spawn(move || {
+        let server = TcpListener::bind("127.0.0.1:9000").expect("failed to bind tcp port");
+        let mut websocket = accept(server.accept().unwrap().0).unwrap();
+        // Channel for file watcher to send us messages through
+        let (tx, rx) = ::std::sync::mpsc::channel();
+
+        let mut watcher: RecommendedWatcher =
+            Watcher::new(tx, ::std::time::Duration::from_secs(0)).unwrap();
+        watcher.watch(&mopt.project_root.join("src"), RecursiveMode::Recursive).unwrap();
+
+        loop {
+            match rx.recv() {
+                Ok(event) => {
+                    println!("notify event: {:?}", event);
+                    let path = match event_path(&event) {
+                        Some(x) => x,
+                        None => continue,
+                    };
+                    let mut refresh_copies = false;
+                    let mut refresh_elm = false;
+                    if path.is_dir() {
+                        for entry in WalkDir::new(path) {
+                            let entry = match entry {
+                                Ok(x) => x,
+                                Err(_) => continue,
+                            };
+                            if is_copy!(entry.path()) {
+                                refresh_copies = true;
+                            }
+                            if is_elm!(entry.path()) {
+                                refresh_elm = true;
+                            }
+                            if refresh_copies && refresh_elm {
+                                break;
+                            }
+                        }
+                    } else {
+                        if is_copy!(path) {
+                            refresh_copies = true;
+                        }
+                        if is_elm!(path) {
+                            refresh_elm = true;
+                        }
+                    }
+                    if refresh_copies {
+                        let _ = copy(&mopt.project_root);
+                    }
+                    if refresh_elm {
+                        elm(&mopt.project_root, &bins.elm, bins.terser.as_deref(), false).unwrap();
+                    }
+                    if refresh_copies || refresh_elm {
+                        let _ = websocket.write_message(Message::text("reload"));
+                        websocket = accept(server.accept().unwrap().0).unwrap();
+                    }
+                },
+                Err(e) => eprintln!("watch error: {:?}", e),
+            }
+        }
+    });
+    cargo(&opt.project_root, false, "run")?;
+    Ok(())
+}
+
 fn main() -> ::anyhow::Result<()> {
     let opt = Opt::from_args();
     // println!("Args: {:?}", opt);
@@ -224,77 +310,7 @@ fn main() -> ::anyhow::Result<()> {
         // Note that this does not handle recompiling the Rust parts
         // of the project. At least, not yet.
         Target::Dev => {
-            copy(&opt.project_root)?;
-            elm(&opt.project_root, &bins.elm, bins.terser.as_deref(), false)?;
-
-            let mut builder = GlobSetBuilder::new();
-            builder.add(Glob::new("*.html")?);
-            builder.add(Glob::new("*.css")?);
-            builder.add(Glob::new("*.js")?);
-            let copy_matcher = builder.build()?;
-            let elm_matcher = Glob::new("*.elm")?.compile_matcher();
-            let ignore_matcher = Glob::new("*#*")?.compile_matcher();
-            let mopt = opt.clone();
-            thread::spawn(move || {
-                let server = TcpListener::bind("127.0.0.1:9000").expect("failed to bind tcp port");
-                let mut websocket = accept(server.accept().unwrap().0).unwrap();
-                // Channel for file watcher to send us messages through
-                let (tx, rx) = ::std::sync::mpsc::channel();
-
-                let mut watcher: RecommendedWatcher =
-                    Watcher::new(tx, ::std::time::Duration::from_secs(0)).unwrap();
-                watcher.watch(&mopt.project_root.join("src"), RecursiveMode::Recursive).unwrap();
-
-                loop {
-                    match rx.recv() {
-                        Ok(event) => {
-                            println!("notify event: {:?}", event);
-                            let path = match event_path(&event) {
-                                Some(x) => x,
-                                None => continue,
-                            };
-                            let mut refresh_copies = false;
-                            let mut refresh_elm = false;
-                            if path.is_dir() {
-                                for entry in WalkDir::new(path) {
-                                    let entry = match entry {
-                                        Ok(x) => x,
-                                        Err(_) => continue,
-                                    };
-                                    if copy_matcher.is_match(entry.path()) && !ignore_matcher.is_match(entry.path()) {
-                                        refresh_copies = true;
-                                    }
-                                    if elm_matcher.is_match(entry.path()) && !ignore_matcher.is_match(entry.path()) {
-                                        refresh_elm = true;
-                                    }
-                                    if refresh_copies && refresh_elm {
-                                        break;
-                                    }
-                                }
-                            } else {
-                                if copy_matcher.is_match(path) && !ignore_matcher.is_match(path) {
-                                    refresh_copies = true;
-                                }
-                                if elm_matcher.is_match(path) && !ignore_matcher.is_match(path) {
-                                    refresh_elm = true;
-                                }
-                            }
-                            if refresh_copies {
-                                let _ = copy(&mopt.project_root);
-                            }
-                            if refresh_elm {
-                                elm(&mopt.project_root, &bins.elm, bins.terser.as_deref(), false).unwrap();
-                            }
-                            if refresh_copies || refresh_elm {
-                                let _ = websocket.write_message(Message::text("reload"));
-                                websocket = accept(server.accept().unwrap().0).unwrap();
-                            }
-                        },
-                        Err(e) => eprintln!("watch error: {:?}", e),
-                    }
-                }
-            });
-            cargo(&opt.project_root, false, "run")?;
+            dev_server(opt, bins)?;
         }
         Target::Clean { html, elm, rust, doc } => {
             match (html, elm, rust, doc) {
