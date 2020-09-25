@@ -1,5 +1,6 @@
 const address = "ws://localhost:9000";
 const reload_key = 'fileshare-dev-reload-token';
+const error_class = 'reload-error';
 var socket = new WebSocket(address);
 function milliseconds(t) {
 	return new Promise(resolve => {
@@ -7,6 +8,13 @@ function milliseconds(t) {
 			resolve('resolved');
 		}, t);
 	});
+}
+
+function make_error(text) {
+	let elem = document.createElement('pre');
+	elem.appendChild(document.createTextNode(text));
+	elem.classList.add(error_class);
+	return elem;
 }
 
 function on_message(event) {
@@ -20,6 +28,8 @@ function on_message(event) {
 		} else {
 			console.log("Don't need to reload again.");
 		}
+	} else if (data.DisplayError) {
+		document.body.appendChild(make_error(data.DisplayError));
 	}
 }
 function on_error(event) {}
