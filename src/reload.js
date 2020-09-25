@@ -46,10 +46,15 @@ async function on_close(event) {
 	init_socket(socket);
 }
 
+function on_open(event) {
+	console.log("Socket open.");
+}
+
 function init_socket(socket) {
 	socket.addEventListener('close', on_close);
 	socket.addEventListener('message', on_message);
-	socket.addEventListener('error', on_error);	
+	socket.addEventListener('error', on_error);
+	socket.addEventListener('open', on_open);
 }
 
 init_socket(socket);
