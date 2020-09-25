@@ -1,4 +1,5 @@
 const address = "ws://localhost:9000";
+const reload_key = 'fileshare-dev-reload-token';
 var socket = new WebSocket(address);
 function milliseconds(t) {
 	return new Promise(resolve => {
@@ -9,7 +10,17 @@ function milliseconds(t) {
 }
 
 function on_message(event) {
-	location.reload();
+	let data = JSON.parse(event.data);
+	console.log(data);
+	if (data.RefreshPage) {
+		let refresh_token = JSON.parse(localStorage.getItem(reload_key));
+		if (data.RefreshPage !== refresh_token) {
+			localStorage.setItem(reload_key, JSON.stringify(data.RefreshPage));
+			location.reload();
+		} else {
+			console.log("Don't need to reload again.");
+		}
+	}
 }
 function on_error(event) {}
 

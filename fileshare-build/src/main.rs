@@ -1,15 +1,13 @@
 //! Doing build logic in shell scripts is lame.
 //! Let's just use Rust.
 use ::globset::{Glob, GlobSetBuilder};
-use ::notify::{RecommendedWatcher, RecursiveMode, Watcher, DebouncedEvent};
 use ::std::fs;
-use ::std::net::TcpListener;
 use ::std::path::{Path, PathBuf};
-use ::std::process::{Command, Stdio};
-use ::std::thread;
+use ::std::process::{self, Command, Stdio};
 use ::structopt::StructOpt;
 use ::walkdir::WalkDir;
-use tungstenite::{server::accept, Message};
+
+mod server;
 
 #[derive(Debug, StructOpt, Clone)]
 struct Opt {
@@ -94,12 +92,18 @@ macro_rules! sp {
     };
 }
 
+pub(crate) enum OutputMethod {
+    Forward,
+    Capture,
+}
+
 fn elm(
     project_root: &Path,
     elm: &Path,
     terser: Option<&Path>,
     release: bool,
-) -> anyhow::Result<()> {
+    out: OutputMethod,
+) -> anyhow::Result<Option<process::Output>> {
     let mut c = Command::new(elm);
     c.arg("make");
     if release {
@@ -107,10 +111,21 @@ fn elm(
     }
     c.arg(project_root.join("src/Main.elm"))
         .arg("--output")
-        .arg(project_root.join("static/main.js"))
-        .spawn()?
-        .wait()
-        .expect("failed to wait on child");
+        .arg(project_root.join("static/main.js"));
+    match out {
+        OutputMethod::Forward => {
+            c.spawn()?.wait().expect("failed to wait on child");
+        }
+        OutputMethod::Capture => {
+            let output = c.output().expect("failed to wait on child");
+            if !output.status.success() {
+                return Ok(Some(output));
+            }
+        }
+    }
+    // We don't collect the output for this,
+    // since its success or failure is entirely
+    // contingent on the success or failure of `elm make`.
     if let Some(terser) = terser {
         sp! { terser ; project_root.join("static/main.js"), "--compress",
               "pure_funcs=\"F2,F3,F4,F5,F6,F7,F8,F9,A2,A3,A4,A5,A6,A7,A8,A9\",pure_getters,keep_fargs=false,unsafe_comps,unsafe"
@@ -118,12 +133,12 @@ fn elm(
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Any source files we just need to copy into the output.
 /// This currently means `.html` and `.css` files.
-fn copy(project_root: &Path) -> anyhow::Result<()> {
+pub(crate) fn copy(project_root: &Path) -> anyhow::Result<()> {
     let mut builder = GlobSetBuilder::new();
     builder.add(Glob::new("*.html")?);
     builder.add(Glob::new("*.css")?);
@@ -184,104 +199,6 @@ impl Binaries {
     }
 }
 
-fn event_path(event: &DebouncedEvent) -> Option<&Path> {
-    match event {
-        | DebouncedEvent::NoticeRemove(x)
-        | DebouncedEvent::Create(x)
-        | DebouncedEvent::Write(x)
-        | DebouncedEvent::Chmod(x)
-        | DebouncedEvent::Remove(x)
-        | DebouncedEvent::Rename(x, _) => Some(x),
-        _ => None,
-    }
-}
-
-
-fn dev_server(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
-    copy(&opt.project_root)?;
-    elm(&opt.project_root, &bins.elm, bins.terser.as_deref(), false)?;
-
-    let mut builder = GlobSetBuilder::new();
-    builder.add(Glob::new("*.html")?);
-    builder.add(Glob::new("*.css")?);
-    builder.add(Glob::new("*.js")?);
-    let copy_matcher = builder.build()?;
-    let elm_matcher = Glob::new("*.elm")?.compile_matcher();
-    let ignore_matcher = Glob::new("*#*")?.compile_matcher();
-    macro_rules! is_copy {
-        ($x:expr) => {
-            (copy_matcher.is_match($x) && !ignore_matcher.is_match($x))
-        }
-    }
-    macro_rules! is_elm {
-        ($x:expr) => {
-            (elm_matcher.is_match($x) && !ignore_matcher.is_match($x))
-        }
-    }
-    let mopt = opt.clone();
-    thread::spawn(move || {
-        let server = TcpListener::bind("127.0.0.1:9000").expect("failed to bind tcp port");
-        let mut websocket = accept(server.accept().unwrap().0).unwrap();
-        // Channel for file watcher to send us messages through
-        let (tx, rx) = ::std::sync::mpsc::channel();
-
-        let mut watcher: RecommendedWatcher =
-            Watcher::new(tx, ::std::time::Duration::from_secs(0)).unwrap();
-        watcher.watch(&mopt.project_root.join("src"), RecursiveMode::Recursive).unwrap();
-
-        loop {
-            match rx.recv() {
-                Ok(event) => {
-                    println!("notify event: {:?}", event);
-                    let path = match event_path(&event) {
-                        Some(x) => x,
-                        None => continue,
-                    };
-                    let mut refresh_copies = false;
-                    let mut refresh_elm = false;
-                    if path.is_dir() {
-                        for entry in WalkDir::new(path) {
-                            let entry = match entry {
-                                Ok(x) => x,
-                                Err(_) => continue,
-                            };
-                            if is_copy!(entry.path()) {
-                                refresh_copies = true;
-                            }
-                            if is_elm!(entry.path()) {
-                                refresh_elm = true;
-                            }
-                            if refresh_copies && refresh_elm {
-                                break;
-                            }
-                        }
-                    } else {
-                        if is_copy!(path) {
-                            refresh_copies = true;
-                        }
-                        if is_elm!(path) {
-                            refresh_elm = true;
-                        }
-                    }
-                    if refresh_copies {
-                        let _ = copy(&mopt.project_root);
-                    }
-                    if refresh_elm {
-                        elm(&mopt.project_root, &bins.elm, bins.terser.as_deref(), false).unwrap();
-                    }
-                    if refresh_copies || refresh_elm {
-                        let _ = websocket.write_message(Message::text("reload"));
-                        websocket = accept(server.accept().unwrap().0).unwrap();
-                    }
-                },
-                Err(e) => eprintln!("watch error: {:?}", e),
-            }
-        }
-    });
-    cargo(&opt.project_root, false, "run")?;
-    Ok(())
-}
-
 fn main() -> ::anyhow::Result<()> {
     let opt = Opt::from_args();
     // println!("Args: {:?}", opt);
@@ -294,6 +211,7 @@ fn main() -> ::anyhow::Result<()> {
                 &bins.elm,
                 bins.terser.as_deref(),
                 release,
+                OutputMethod::Forward,
             )?;
             cargo(&opt.project_root, release, "run")?;
         }
@@ -304,15 +222,21 @@ fn main() -> ::anyhow::Result<()> {
                 &bins.elm,
                 bins.terser.as_deref(),
                 release,
+                OutputMethod::Forward,
             )?;
             cargo(&opt.project_root, release, "build")?;
         }
         // Note that this does not handle recompiling the Rust parts
         // of the project. At least, not yet.
         Target::Dev => {
-            dev_server(opt, bins)?;
+            server::start(opt, bins)?;
         }
-        Target::Clean { html, elm, rust, doc } => {
+        Target::Clean {
+            html,
+            elm,
+            rust,
+            doc,
+        } => {
             match (html, elm, rust, doc) {
                 (true, _, _, _) => sp! { "rm" ; "-rf", opt.project_root.join("static") },
                 (_, true, _, false) => sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") },
@@ -320,20 +244,20 @@ fn main() -> ::anyhow::Result<()> {
                 // this should delete that.
                 (_, true, _, true) => return Ok(()),
                 (_, _, true, false) => sp! { "cargo" ; "clean",
-                                              "--manifest-path", opt.project_root.join("Cargo.toml") },
+                "--manifest-path", opt.project_root.join("Cargo.toml") },
                 (_, _, true, true) => sp! { "cargo" ; "clean", "--doc",
-                                             "--manifest-path", opt.project_root.join("Cargo.toml") },
+                "--manifest-path", opt.project_root.join("Cargo.toml") },
                 // This should delete *all* generated documentation.
                 // That means once I figure out Elm documentation,
                 // deleting it needs to be added here.
                 (false, false, false, true) => sp! { "cargo" ; "clean", "--doc", "--manifest-path",
-                                                      opt.project_root.join("Cargo.toml") },
+                opt.project_root.join("Cargo.toml") },
                 // This should delete *all* build artifacts.
                 (false, false, false, false) => {
                     sp! { "rm" ; "-rf", opt.project_root.join("static") };
                     sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") };
                     sp! { "cargo" ; "clean", "--manifest-path", opt.project_root.join("Cargo.toml") };
-                    return Ok(())
+                    return Ok(());
                 }
             };
         }
