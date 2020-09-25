@@ -49,6 +49,37 @@ enum Target {
     },
 }
 
+/// A little abstraction because I messed this up before, lol.
+struct NormalizedClean {
+    // These are normalized.
+    // If true, do it.
+    html: bool,
+    elm: bool,
+    rust: bool,
+    // This one is special,
+    // in that it alters the others.
+    doc: bool,
+}
+impl NormalizedClean {
+    /// Normalize from narrowing form.
+    fn new(html: bool, elm: bool, rust: bool, doc: bool) -> Self {
+        match (html, elm, rust) {
+            (false, false, false) => Self {
+                html: true,
+                elm: true,
+                rust: true,
+                doc,
+            },
+            (html, elm, rust) => Self {
+                html,
+                elm,
+                rust,
+                doc,
+            },
+        }
+    }
+}
+
 fn cargo(project_root: &Path, release: bool, subcommand: &str) -> anyhow::Result<()> {
     let mut c = Command::new("cargo");
     c.arg(subcommand);
@@ -237,29 +268,29 @@ fn main() -> ::anyhow::Result<()> {
             rust,
             doc,
         } => {
-            match (html, elm, rust, doc) {
-                (true, _, _, _) => sp! { "rm" ; "-rf", opt.project_root.join("static") },
-                (_, true, _, false) => sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") },
-                // Once I figure out Elm documentation,
-                // this should delete that.
-                (_, true, _, true) => return Ok(()),
-                (_, _, true, false) => sp! { "cargo" ; "clean",
-                "--manifest-path", opt.project_root.join("Cargo.toml") },
-                (_, _, true, true) => sp! { "cargo" ; "clean", "--doc",
-                "--manifest-path", opt.project_root.join("Cargo.toml") },
-                // This should delete *all* generated documentation.
-                // That means once I figure out Elm documentation,
-                // deleting it needs to be added here.
-                (false, false, false, true) => sp! { "cargo" ; "clean", "--doc", "--manifest-path",
-                opt.project_root.join("Cargo.toml") },
-                // This should delete *all* build artifacts.
-                (false, false, false, false) => {
+            let normal = NormalizedClean::new(html, elm, rust, doc);
+            if normal.html {
+                if normal.doc {
+                    // There are no docs for this target, yet.
+                } else {
                     sp! { "rm" ; "-rf", opt.project_root.join("static") };
-                    sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") };
-                    sp! { "cargo" ; "clean", "--manifest-path", opt.project_root.join("Cargo.toml") };
-                    return Ok(());
                 }
-            };
+            }
+            if normal.elm {
+                if normal.doc {
+                    // There are no docs for this target, yet.
+                } else {
+                    sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") };
+                }
+            }
+            if normal.rust {
+                if normal.doc {
+                    sp! { "cargo" ; "clean", "--doc",
+                    "--manifest-path", opt.project_root.join("Cargo.toml") };
+                } else {
+                    sp! { "cargo" ; "clean", "--manifest-path", opt.project_root.join("Cargo.toml") };
+                }
+            }
         }
     }
     Ok(())
