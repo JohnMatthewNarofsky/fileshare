@@ -29,6 +29,11 @@ function on_message(event) {
 			console.log("Don't need to reload again.");
 		}
 	} else if (data.DisplayError) {
+		// Remove previous error messages,
+		// since we know that the server will regenerate them if necessary.
+		for (const elem of document.getElementsByClassName(error_class)) {
+			document.body.removeChild(elem);
+		}
 		document.body.appendChild(make_error(data.DisplayError));
 	}
 }
