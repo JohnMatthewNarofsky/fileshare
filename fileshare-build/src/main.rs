@@ -273,14 +273,16 @@ fn main() -> ::anyhow::Result<()> {
                 if normal.doc {
                     // There are no docs for this target, yet.
                 } else {
-                    sp! { "rm" ; "-rf", opt.project_root.join("static") };
+                    ::fsio::directory::delete(&opt.project_root.join("static"))
+                        .map_err(|e| ::anyhow::anyhow!("{}", e))?;
                 }
             }
             if normal.elm {
                 if normal.doc {
                     // There are no docs for this target, yet.
                 } else {
-                    sp! { "rm" ; "-rf", opt.project_root.join("elm-stuff") };
+                    ::fsio::directory::delete(&opt.project_root.join("elm-stuff"))
+                        .map_err(|e| ::anyhow::anyhow!("{}", e))?;
                 }
             }
             if normal.rust {
