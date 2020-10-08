@@ -4,6 +4,7 @@
     <script src="reload.js"></script>
     <script src="main.js"></script>
     <link rel="stylesheet" href="style.css" />
+    <title>Fileshare</title>
   </head>
   <body>
     <div id="wrapper">
@@ -15,13 +16,11 @@
           As long as <code>reload.js</code> is loaded,
           our changes will be automatically reflected in the browser!
         </p>
-        <div id="elm"></div>
       </main>
     </div>
   </body>
   <script>
-    var app = Elm.Main.init({
-       node: document.getElementById('elm')
-    });
+    // Full Elm SPA. This will override the whole page.
+    var app = Elm.Main.init({});
   </script>
 </html>

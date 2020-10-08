@@ -1,19 +1,48 @@
+-- Since this service is intended to be used for files too large to be sent
+-- directly in a chat message, it should smooth over transient network issues.
 module Main exposing (..)
+
 import Browser
+import Browser.Navigation as Nav
 import Html exposing (Html)
 import Html.Events as Events
+import Html.Attributes as Attr
+import Json.Decode as JsonDecode
+import Url
 
-main = Browser.sandbox { init = 0, update = update, view = view }
+-- Main
+main : Program () Model Msg
+main = Browser.application
+       { init = init
+       , view = view
+       , update = update
+       , subscriptions = subscriptions
+       , onUrlChange = UrlChanged
+       , onUrlRequest = LinkClicked
+       }
 
-type Msg = Increment | Decrement
+-- Model
+type alias Model = {}
 
-update msg model =
-    case msg of
-        Increment -> model + 1
-        Decrement -> model - 1
+init : () -> Url.Url -> Nav.Key -> (Model, Cmd Msg)
+init flags url key = (Model, Cmd.none)
 
-view model = Html.div []
-             [ Html.button [ Events.onClick Decrement ] [ Html.text "-" ]
-             , Html.div [] [ Html.text (String.fromInt model) ]
-             ,  Html.button [ Events.onClick Increment ] [ Html.text "+" ]
-             ]
+-- Update
+type Msg
+    = LinkClicked Browser.UrlRequest
+    | UrlChanged Url.Url
+
+update : Msg -> Model -> (Model, Cmd Msg)
+update msg model = (model, Cmd.none)
+
+-- Subscriptions
+subscriptions : Model -> Sub Msg
+subscriptions _ = Sub.none
+
+-- View
+view : Model -> Browser.Document Msg
+view model =
+    { title = "Fileshare"
+    , body =
+        [ Html.text "I am a single page web app!" ]
+    }
