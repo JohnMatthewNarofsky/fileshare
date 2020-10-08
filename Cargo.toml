@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rocket = { git = "https://github.com/SergioBenitez/Rocket.git", branch = "master" }
+rocket = { git = "https://github.com/SergioBenitez/Rocket.git", branch = "master", features = ["tls"] }
 rocket_contrib = { git = "https://github.com/SergioBenitez/Rocket.git", branch = "master" }
 
 [workspace]

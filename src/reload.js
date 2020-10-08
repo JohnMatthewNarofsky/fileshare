@@ -1,4 +1,4 @@
-const address = "ws://localhost:9000";
+const address = "wss://home.greenjaffaco.com:9000";
 const reload_key = 'fileshare-dev-reload-token';
 const error_class = 'reload-error';
 var socket = new WebSocket(address);
