@@ -69,11 +69,11 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
         .await
         .expect("failed to bind tcp port");
     #[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize)]
-    struct RefreshToken (u64);
+    struct RefreshToken(u64);
     impl RefreshToken {
         fn new() -> Self {
             use ::rand::Rng;
-            Self (::rand::thread_rng().gen())
+            Self(::rand::thread_rng().gen())
         }
     }
     #[derive(Debug, Clone, ::serde::Serialize)]
