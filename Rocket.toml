@@ -1,0 +1,7 @@
+[global.tls]
+certs = "./home.greenjaffaco.com/fullchain.cer"
+key = "./home.greenjaffaco.com/home.greenjaffaco.com.key"
+
+[development]
+# Service workers only work when using HTTPS.
+address = "0.0.0.0"
