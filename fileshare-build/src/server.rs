@@ -1,7 +1,7 @@
 use super::OutputMethod;
 use crate::Binaries;
 use crate::Opt;
-use crate::{cargo, copy, elm};
+use crate::{copy, elm};
 use ::futures::SinkExt;
 use ::globset::{Glob, GlobSetBuilder};
 use ::notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
@@ -9,9 +9,9 @@ use ::serde::Deserialize;
 use ::std::path::Path;
 use ::std::process;
 use ::std::thread;
+use ::tokio_rustls::rustls;
 use ::walkdir::WalkDir;
 use tungstenite::Message;
-use ::tokio_rustls::rustls;
 
 fn event_path(event: &DebouncedEvent) -> Option<&Path> {
     match event {
@@ -52,16 +52,14 @@ fn load_private_key(filename: &Path) -> rustls::PrivateKey {
     use ::std::fs;
     use ::std::io::BufReader;
     let rsa_keys = {
-        let keyfile = fs::File::open(filename)
-            .expect("cannot open private key file");
+        let keyfile = fs::File::open(filename).expect("cannot open private key file");
         let mut reader = BufReader::new(keyfile);
         rustls::internal::pemfile::rsa_private_keys(&mut reader)
             .expect("file contains invalid rsa private key")
     };
 
     let pkcs8_keys = {
-        let keyfile = fs::File::open(filename)
-            .expect("cannot open private key file");
+        let keyfile = fs::File::open(filename).expect("cannot open private key file");
         let mut reader = BufReader::new(keyfile);
         rustls::internal::pemfile::pkcs8_private_keys(&mut reader)
             .expect("file contains invalid pkcs8 private key (encrypted keys not supported)")
@@ -86,10 +84,41 @@ fn make_server_tls(project_root: &Path) -> rustls::ServerConfig {
     let mut tls_config = rustls::ServerConfig::new(rustls::NoClientAuth::new());
     let certs = load_certs(&rocket_cfg.global.tls.certs);
     let privkey = load_private_key(&rocket_cfg.global.tls.key);
-    tls_config.set_single_cert(certs, privkey).expect("bad certificates/private key");
+    tls_config
+        .set_single_cert(certs, privkey)
+        .expect("bad certificates/private key");
     // tls_config.set_persistence(rustls::ServerSessionMemoryCache::new(256));
 
     tls_config
+}
+#[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize)]
+struct RefreshToken(u64);
+impl RefreshToken {
+    fn new() -> Self {
+        use ::rand::Rng;
+        Self(::rand::thread_rng().gen())
+    }
+}
+#[derive(Debug, Clone, ::serde::Serialize)]
+enum BrowserAction {
+    // To prevent infinite reloading,
+    // we generate a token to be associated with the
+    // latest page refresh.
+    // The client will use localStorage to keep
+    // the last page refresh token they received,
+    // and if they receive it again, ignore the refresh.
+    // The only operation we need the RefreshToken to support
+    // is equality comparison.
+    RefreshPage(RefreshToken),
+    DisplayError(String),
+}
+// If we start trying to do granular module reloading in the browser,
+// this will need to change to a broadcast channel of some sort.
+// For now, we assume that a page reload, which will bring the browser
+// to the correct state, is the only response other than showing the current error.
+#[derive(Debug, Clone, ::serde::Serialize)]
+enum ServerAction {
+    Reload(RefreshToken),
 }
 
 // TODO: Make this use Tokio instead.
@@ -125,6 +154,7 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
     builder.add(Glob::new("*.js")?);
     let copy_matcher = builder.build()?;
     let elm_matcher = Glob::new("*.elm")?.compile_matcher();
+    let rust_matcher = Glob::new("*.rs")?.compile_matcher();
     let ignore_matcher = Glob::new("*#*")?.compile_matcher();
     macro_rules! is_copy {
         ($x:expr) => {
@@ -136,37 +166,19 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
             (elm_matcher.is_match($x) && !ignore_matcher.is_match($x))
         };
     }
+    macro_rules! is_rust {
+        ($x:expr) => {
+            (rust_matcher.is_match($x) && !ignore_matcher.is_match($x))
+        };
+    }
     let mopt = opt.clone();
 
     let mut listener = ::tokio::net::TcpListener::bind("0.0.0.0:9000")
         .await
         .expect("failed to bind tcp port");
-    #[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize)]
-    struct RefreshToken(u64);
-    impl RefreshToken {
-        fn new() -> Self {
-            use ::rand::Rng;
-            Self(::rand::thread_rng().gen())
-        }
-    }
-    #[derive(Debug, Clone, ::serde::Serialize)]
-    enum BrowserAction {
-        // To prevent infinite reloading,
-        // we generate a token to be associated with the
-        // latest page refresh.
-        // The client will use localStorage to keep
-        // the last page refresh token they received,
-        // and if they receive it again, ignore the refresh.
-        // The only operation we need the RefreshToken to support
-        // is equality comparison.
-        RefreshPage(RefreshToken),
-        DisplayError(String),
-    }
-    // If we start trying to do granular module reloading in the browser,
-    // this will need to change to a broadcast channel of some sort.
-    // For now, we assume that a page reload, which will bring the browser
-    // to the correct state, is the only response other than showing the current error.
+
     let (tx, rx) = ::tokio::sync::watch::channel(None::<BrowserAction>);
+    let (stx, srx) = ::tokio::sync::watch::channel(None::<ServerAction>);
     let (wtx, wrx) = ::std::sync::mpsc::channel();
     let mut watcher: RecommendedWatcher = Watcher::new(wtx, ::std::time::Duration::from_secs(0))?;
     watcher.watch(opt.project_root.join("src"), RecursiveMode::Recursive)?;
@@ -186,6 +198,7 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
                     };
                     let mut refresh_copies = false;
                     let mut refresh_elm = false;
+                    let mut refresh_rust = false;
                     if path.is_dir() {
                         for entry in WalkDir::new(path) {
                             let entry = match entry {
@@ -198,6 +211,9 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
                             if is_elm!(entry.path()) {
                                 refresh_elm = true;
                             }
+                            if is_rust!(entry.path()) {
+                                refresh_rust = true;
+                            }
                             if refresh_copies && refresh_elm {
                                 break;
                             }
@@ -208,6 +224,9 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
                         }
                         if is_elm!(path) {
                             refresh_elm = true;
+                        }
+                        if is_rust!(path) {
+                            refresh_rust = true;
                         }
                     }
                     if refresh_copies {
@@ -239,15 +258,19 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
                                 .expect("channel closed"),
                         }
                     }
+                    if refresh_rust {
+                        stx.broadcast(Some(ServerAction::Reload(RefreshToken::new())))
+                            .expect("channel closed");
+                    }
                 }
                 Err(e) => eprintln!("watch error: {}", e),
             }
         }
     });
     let project_root = opt.project_root.clone();
-    thread::spawn(move || {
-        cargo(&project_root, false, "run").unwrap();
-    });
+
+    ::tokio::spawn(rocket_main(project_root, srx));
+
     // Give each connection its own task.
     while let Ok((stream, _)) = listener.accept().await {
         let acceptor = tls_acceptor.clone();
@@ -271,9 +294,37 @@ pub(crate) async fn start(opt: Opt, bins: Binaries) -> ::anyhow::Result<()> {
                     }
                 }
             } catch (e) {
-                eprintln!("{}", e);
+                eprintln!("{:?}", e);
             }}
         });
     }
     Ok(())
+}
+
+/// Task managing the main server process.
+async fn rocket_main(
+    project_root: ::std::path::PathBuf,
+    mut srx: ::tokio::sync::watch::Receiver<Option<ServerAction>>,
+) {
+    let mut rocket = spawn_rocket(&project_root);
+    while let Some(action) = srx.recv().await {
+        match action {
+            Some(ServerAction::Reload(_)) => {
+                let _ = rocket.kill();
+                rocket = spawn_rocket(&project_root);
+            },
+            None => continue,
+        }
+    }
+
+}
+
+fn spawn_rocket(project_root: &Path) -> ::std::process::Child {
+    // Since we're not waiting on this anymore, we don't need to spawn it in another thread.
+    ::std::process::Command::new("cargo")
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(project_root.join("Cargo.toml"))
+        .spawn()
+        .expect("failed to spawn Rocket main")
 }
